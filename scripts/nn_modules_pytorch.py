@@ -2,13 +2,11 @@ from torch import nn
 
 class MLP(nn.Module):
     """
-    
     A multi-layer perceptron (MLP) with customizable hidden layers.
     
     Args:
         - input_dim (int): The input dimension to the first fully connected layer (default: 512).
-        - hidden_layers (list of int): List specifying the number of units in each hidden layer.
-        
+        - hidden_layers (list of int): List specifying the number of units in each hidden layer. 
     """
     def __init__(self, input_dim: int=512, hidden_layers: list=[512,512,128]):
         super().__init__()
@@ -22,7 +20,6 @@ class MLP(nn.Module):
         
     def forward(self, x):
         """
-        
         Forward pass of the MLP module.
         
         Args:
@@ -30,7 +27,6 @@ class MLP(nn.Module):
         
         Returns:
             - Output tensor after passing through the MLP layers.
-            
         """
         for i in range(len(self.projection_layers)):
             x = self.projection_layers[i](x)
@@ -39,7 +35,6 @@ class MLP(nn.Module):
 
 class ConvBlock(nn.Module):
     """
-    
     A custom convolutional block with Pytorch that consists of two convolution layers.
     
     Args:
@@ -48,7 +43,6 @@ class ConvBlock(nn.Module):
         - kernel_size (int): Size of the convolving kernel (default: 3).
         - stride (int): Stride of the convolution (default: 1).
         - padding (int): Padding added to all four sides of the input (default: 1).
-        
     """
 
     def __init__(self, in_channels: int=None, out_channels: int=None,
@@ -78,15 +72,13 @@ class ConvBlock(nn.Module):
 
     def forward(self, x):
         """
-        
         Defines the forward pass through the convolutional block.
         
         Args:
             - x (Pytroch Tensor): Input image.
         
         Returns:
-            - Pytorch Tensor with out_channels channels.
-            
+            - Pytorch Tensor with out_channels channels. 
         """
         input_x = x
         out = self.conv1(x)
@@ -101,14 +93,12 @@ class ConvBlock(nn.Module):
     
 class JointBlocks(nn.Module):
     """
-    
     A PyTorch module that combines multiple convolutional blocks and average pooling layers.
     
     Args:
         - input_channels (int): Number of input channels for the first convolutional block (default: 32).
         - block_channels (list of int): List specifying the output channels for each convolutional block.
         - avg_pooling_layers (list of int): List specifying the kernel size for each average pooling layer.
-        
     """
     def __init__(self, input_channels: int=32, block_channels: list=[32,64,128], avg_pooling_layers: list=[2,2,4]):
         super().__init__()
@@ -139,7 +129,6 @@ class JointBlocks(nn.Module):
         
         Returns:
             - Flattened output tensor after passing through all layers.
-            
         """
         for i in range(len(self.layers)):
             x = self.layers[i](x)
@@ -149,14 +138,12 @@ class JointBlocks(nn.Module):
 
 class Encoder(nn.Module):
     """
-    
     A PyTorch encoder module that applies an initial convolution layer followed by joint blocks.
     
     Args:
         - input_channels (int): Number of input channels (default: 4).
         - first_layer_output_channels (int): Number of output channels after the first convolution (default: 32).
         - joint_blocks (nn.Module): A module containing several convolutional blocks.
-        
     """
         
     def __init__(self, input_channels: int=4, first_layer_output_channels: int=32, joint_blocks: nn.Module=None):
@@ -177,7 +164,6 @@ class Encoder(nn.Module):
         
     def forward(self, x):
         """
-        
         Forward pass of the encoder module.
         
         Args:
@@ -185,7 +171,6 @@ class Encoder(nn.Module):
         
         Returns:
             - Pytorch Tensor: Flattened output of the encoder.
-            
         """
         #x = self.bn_input(x)
         x = self.conv1(x)
