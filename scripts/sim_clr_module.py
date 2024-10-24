@@ -2,8 +2,16 @@ import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 
-class sim_clr_lightning(pl.LightningModule):
-    def __init__(self, encoder, encoder_mlp, projection_head, transforms, lr, loss_type='contrastive'):
+class SimCLRLightning(pl.LightningModule):
+    def __init__(
+        self,
+        encoder=None,
+        encoder_mlp=None,
+        projection_head=None,
+        transforms=None,
+        lr=None,
+        loss_type='contrastive'
+    ):
         super().__init__()
         self.encoder = encoder
         self.encoder_mlp = encoder_mlp
@@ -13,70 +21,84 @@ class sim_clr_lightning(pl.LightningModule):
         self.loss_type = loss_type
         
     def forward(self, x):
+        """Forward pass through the encoder and projection head."""
         x = self.encoder(x)
-        # in case projection head from CNN output is separated into two mlps, an encoder_mlp and a projection head
-        if self.encoder_mlp is not None:
+        if self.encoder_mlp:  # Apply optional MLP layer
             x = self.encoder_mlp(x)
-        x = self.projection_head(x)
-        return x
+        return self.projection_head(x)
     
     def contrastive_loss(self, projections, temp=0.07):
-        # first half of projections and second half of projections are positive pairs
+        """Compute contrastive loss using cosine similarity."""
+        # first half of projections and second half of projections are positive pairs.
         cos_sim = F.cosine_similarity(projections[:,None,:], projections[None,:,:], dim=-1)
+
+        # Mask out self-similarity
         self_mask = torch.eye(cos_sim.shape[0], dtype=torch.bool, device=cos_sim.device)
         cos_sim.masked_fill_(self_mask, -1e4)
+
+        # Identify positive pairs (rolled mask)
         pos_mask = self_mask.roll(shifts=cos_sim.shape[0]//2, dims=0)
         cos_sim = cos_sim / temp
 
+        # Compute negative log-likelihood per pair
         nll = -cos_sim[pos_mask] + torch.logsumexp(cos_sim, dim=-1)
 
-        return nll.mean()
+        return nll.mean() # averaged over all pairs
     
     def calculate_unif_and_align(self, projections):
-        first_batch_projections = projections[:projections.shape[0]//2,:]
-        positive_pair_projections = projections[projections.shape[0]//2:,:]
-        l_align = (first_batch_projections - positive_pair_projections).norm(dim=1).pow(2).mean()
-        sq_pdist1 = torch.pdist(first_batch_projections, p=2).pow(2)
-        l_unif1 = sq_pdist1.mul(-2).exp().mean().log()
-        sq_pdist2 = torch.pdist(positive_pair_projections, p=2).pow(2)
-        l_unif2 = sq_pdist2.mul(-2).exp().mean().log()
+        batch_size = projections.shape[0] // 2
+
+        # Split projections into two halves for positive pairs
+        first_batch_projections = projections[:batch_size,:]
+        positive_pair_projections = projections[batch_size:,:]
+
+        alignment_loss = (first_batch_projections - positive_pair_projections).norm(dim=1).pow(2).mean()
+
+        def uniformity_loss(batch_projections):
+            sq_dist = torch.pdist(batch_projections, p=2).pow(2)
+            return sq_dist.mul(-2).exp().mean().log()
+        uniformity_loss_first = uniformity_loss(first_batch_projections)
+        uniformity_loss_second = uniformity_loss(positive_pair_projections)
         
-        return l_align, (l_unif1 + l_unif2)/2
+        return alignment_loss, (uniformity_loss_first + uniformity_loss_second)/2
     
     def align_unif_loss(self, projections, lamda=1):
         # this is for using alignment + uniformity loss from Wang & Isola 2022
         l_align, l_unif = self.calculate_unif_and_align(projections)
-        
+
         return l_align + lamda*l_unif
+    
+    def compute_loss(self, projections):
+        """Select and compute the loss based on the chosen loss type."""
+        if self.loss_type == 'contrastive':
+            return self.contrastive_loss(projections)
+        elif self.loss_type == 'align_unif':
+            return self.align_unif_loss(projections, lamda=0.5)
     
     def training_step(self, batch_images, batch_idx):
         # transform batch images twice to create batch_size positive pairs (batch_size*2 images in total)
         batch_transformed_images = torch.cat((self.transforms(batch_images), self.transforms(batch_images)), dim=0)
         projections = self.forward(batch_transformed_images)
-        if self.loss_type == 'contrastive':
-            loss = self.contrastive_loss(projections)
-        elif self.loss_type == 'align_unif':
-            loss = self.align_unif_loss(projections, lamda=0.5)
+
+        loss = self.compute_loss(projections)
         self.log("training_loss", loss, on_epoch=True, sync_dist=True)
         
-        l_align, l_unif = self.calculate_unif_and_align(projections)
-        self.log("l_align_train", l_align, on_epoch=True, sync_dist=True)
-        self.log("l_unif_train", l_unif, on_epoch=True, sync_dist=True)
+        # l_align, l_unif = self.calculate_unif_and_align(projections)
+        # self.log("l_align_train", l_align, on_epoch=True, sync_dist=True)
+        # self.log("l_unif_train", l_unif, on_epoch=True, sync_dist=True)
         
         return loss
     
     def validation_step(self, batch_images, batch_idx):
         batch_transformed_images = torch.cat((self.transforms(batch_images), self.transforms(batch_images)), dim=0)
         projections = self.forward(batch_transformed_images)
-        if self.loss_type == 'contrastive':
-            loss = self.contrastive_loss(projections)
-        elif self.loss_type == 'align_unif':
-            loss = self.align_unif_loss(projections, lamda=0.5)
-        self.log("validation_loss", loss, on_epoch=True, sync_dist=True)
         
-        l_align, l_unif = self.calculate_unif_and_align(projections)
-        self.log("l_align_train", l_align, on_epoch=True, sync_dist=True)
-        self.log("l_unif_train", l_unif, on_epoch=True, sync_dist=True)
+        loss = self.compute_loss(projections)
+        self.log("val_loss", loss, on_epoch=True, sync_dist=True)
+        
+        # l_align, l_unif = self.calculate_unif_and_align(projections)
+        # self.log("l_align_train", l_align, on_epoch=True, sync_dist=True)
+        # self.log("l_unif_train", l_unif, on_epoch=True, sync_dist=True)
         
         return loss
     
