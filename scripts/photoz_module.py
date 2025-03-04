@@ -33,20 +33,18 @@ class PhotozLightning(pl.LightningModule):
         x = self.photoz_mlp(x)
         return x
     
-    def redshift_weighted_loss(self, pred_redshifts, true_redshifts, weights):
+    def redshift_loss(self, pred_redshifts, true_redshifts):
         """
-        A weighted loss function combining MSE and L1 losses with custom weights.
-        Weights are assumed to be squared already if they are e.g. inverse uncertainties.
+        Huber loss with delta=0.15.
         """
-        mse_loss = torch.mean((pred_redshifts - true_redshifts) ** 2 * weights)
-        l1_loss = torch.mean(torch.abs(pred_redshifts - true_redshifts) * torch.sqrt(weights)) ** 2
-        return mse_loss + l1_loss
+        loss = torch.nn.HuberLoss(delta=0.15)
+        return loss(pred_redshifts, true_redshifts)
     
     def training_step(self, batch_data, batch_idx):
         """
         Training step: processes the batch, computes the loss, and logs metrics.
         """
-        batch_images, batch_redshifts, batch_weights = batch_data
+        batch_images, batch_redshifts, batch_weights, _ = batch_data
         
         if self.transforms is not None:
             batch_redshift_predictions = self.forward(self.transforms(batch_images)).squeeze()
@@ -57,7 +55,7 @@ class PhotozLightning(pl.LightningModule):
         assert batch_redshifts.shape == batch_redshift_predictions.shape
         assert batch_redshift_predictions.shape == batch_weights.shape
         
-        loss = self.redshift_weighted_loss(batch_redshift_predictions, batch_redshifts, batch_weights)
+        loss = self.redshift_loss(batch_redshift_predictions, batch_redshifts)
         self.log("training_loss", loss, on_epoch=True, sync_dist=True)
         
         # Compute metrics (bias, NMAD, and outlier fraction)
@@ -77,7 +75,7 @@ class PhotozLightning(pl.LightningModule):
         """
         Same as training step but for validation data.
         """
-        batch_images, batch_redshifts, batch_weights = batch_data
+        batch_images, batch_redshifts, batch_weights, _ = batch_data
         
         if self.transforms is not None:
             batch_redshift_predictions = self.forward(self.transforms(batch_images)).squeeze()
@@ -88,7 +86,7 @@ class PhotozLightning(pl.LightningModule):
         assert batch_redshifts.shape == batch_redshift_predictions.shape
         assert batch_redshift_predictions.shape == batch_weights.shape
         
-        loss = self.redshift_weighted_loss(batch_redshift_predictions, batch_redshifts, batch_weights)
+        loss = self.redshift_loss(batch_redshift_predictions, batch_redshifts)
         self.log("validation_loss", loss, on_step=True, on_epoch=True, sync_dist=True)
         
         delta = (batch_redshift_predictions - batch_redshifts) / (1+batch_redshifts)
@@ -112,9 +110,9 @@ class PhotozLightning(pl.LightningModule):
         #lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optim, T_max=900, eta_min=5e-7)
         lr_scheduler = WarmupCosineAnnealingScheduler(
             optimizer=optim,
-            warmup_epochs=80,
-            cos_half_period=900,
-            min_lr=1e-7
+            warmup_epochs=100,
+            cos_half_period=500,
+            min_lr=5e-6
         )
         
         return [optim], [lr_scheduler]

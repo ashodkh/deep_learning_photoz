@@ -1,12 +1,15 @@
 import pytorch_lightning as pl
 import torch
 import h5py
+import numpy as np
+
 
 class ImagesDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         path_to_file: str = None,
-        with_labels: bool = False,
+        with_redshift: bool = False,
+        with_features: bool = False,
         with_weights: bool = False,
         reddening_transform = None,
         load_ebv: bool = False,
@@ -14,7 +17,8 @@ class ImagesDataset(torch.utils.data.Dataset):
     ):
         super().__init__()
         self.h5_file = h5py.File(path_to_file, 'r')
-        self.with_labels = with_labels
+        self.with_redshift = with_redshift
+        self.with_features = with_features
         self.with_weights = with_weights
         self.reddening_transform = reddening_transform
         self.load_ebv = load_ebv
@@ -26,17 +30,23 @@ class ImagesDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx: int):
         image = self.h5_file['images'][idx]
         ebv = self.h5_file['ebvs'][idx] if self.load_ebv else None
-        redshift = self.h5_file['redshifts'][idx] if self.with_labels else None
-        weight = self.h5_file['redshift_weights'][idx] if self.with_weights else 1
+        redshift = self.h5_file['redshifts'][idx] if self.with_redshift else None
+        color_features = self.h5_file['dereddened_features'][idx] if self.with_features else 1
+        redshift_weight = self.h5_file['use_redshift'][idx] if self.with_weights else 1
 
         # Apply reddening transformation if provided
         if self.reddening_transform:
             image = self.reddening_transform([image, ebv])
 
-        if self.with_labels:
-            return image, redshift, weight
+        if self.im_id == 3:
+            image = np.float64(image)
+            image = np.sign(image)*np.log10(1+np.abs(1000*image))
+            image = np.float16(image)
+        if self.with_redshift:
+            return image, redshift, redshift_weight, color_features
         else:
             return image
+
 
         
 class candels_images_data_module(pl.LightningDataModule):
