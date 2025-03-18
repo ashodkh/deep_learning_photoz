@@ -65,11 +65,11 @@ class SimCLRMoCoLightning(pl.LightningModule):
 
         x_redshift, x_color = None, None
         if self.redshift_mlp is not None:
-            x_redshift = self.redshift_mlp(x)
+            x_redshift = self.redshift_mlp(x).squeeze()
         if self.color_mlp is not None:
             x_color = self.color_mlp(x)
         
-        return F.normalize(x_proj, dim=1), x_redshift.squeeze(), x_color
+        return F.normalize(x_proj, dim=1), x_redshift, x_color
     
     @torch.no_grad()
     def update_momentum_encoder(self):
