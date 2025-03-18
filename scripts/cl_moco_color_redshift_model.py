@@ -30,7 +30,6 @@ class SimCLRMoCoLightning(pl.LightningModule):
         self.loss_type = loss_type
         self.momentum = momentum
         self.temperature = temperature
-        #self.loss_weights = torch.nn.Parameter(torch.tensor([1.0, 1.0, 1.0]), requires_grad=True)
         
         # Initialize the momentum (key) encoder and its heads as copies of the original
         self.momentum_encoder = copy.deepcopy(self.encoder)
@@ -52,7 +51,7 @@ class SimCLRMoCoLightning(pl.LightningModule):
         self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
     
     def forward(self, x, use_momentum_encoder=False):
-        """Forward pass through the encoder, MLP, and projection head."""
+        """Forward pass through the encoder and MLPs."""
         if use_momentum_encoder:
             x = self.momentum_encoder(x)
             if self.momentum_encoder_mlp:
@@ -63,12 +62,12 @@ class SimCLRMoCoLightning(pl.LightningModule):
             if self.encoder_mlp:
                 x = self.encoder_mlp(x)
             x_proj = self.projection_head(x)
-        
+
+        x_redshift, x_color = None, None
         if self.redshift_mlp is not None:
             x_redshift = self.redshift_mlp(x)
-        else:
-            x_redshift = None
-        x_color = self.color_mlp(x)
+        if self.color_mlp is not None:
+            x_color = self.color_mlp(x)
         
         return F.normalize(x_proj, dim=1), x_redshift.squeeze(), x_color
     
@@ -124,12 +123,33 @@ class SimCLRMoCoLightning(pl.LightningModule):
         mse_loss = torch.mean((predictions - truths) ** 2 * weights)
         return mse_loss
     
-    def redshift_loss(self, pred_redshifts, true_redshifts):
+    def huber_loss(self, pred_redshifts, true_redshifts):
         """
         Huber loss with delta=0.15.
         """
         loss = torch.nn.HuberLoss(delta=0.15)
         return loss(pred_redshifts, true_redshifts)
+    
+    def redshift_loss_and_metrics(predicted_redshifts, true_redshifts, redshift_weights):
+        """
+        Compute redshift loss and metrics.
+        """
+        good_redshifts_mask = redshift_weights == 1
+        if good_redshifts_mask is None:
+            redshift_loss, bias, nmad, outlier_fraction = 0, 0, 0, 0
+        else:
+            predicted_redshifts = predicted_redshifts[good_redshifts_mask]
+            true_redshifts = true_redshifts[good_redshifts_mask]
+
+            redshift_loss = self.huber_loss(predicted_redshifts, true_redshifts)
+            redshift_loss = 10 * redshift_loss
+
+            delta = (predicted_redshifts - true_redshifts) / (1+true_redshifts)
+            bias = torch.mean(delta)
+            nmad = 1.4826*torch.median(torch.abs(delta-torch.median(delta)))
+            outlier_fraction = torch.sum(torch.abs(delta)>0.15)/len(true_redshifts)
+
+        return redshift_loss, bias, nmad, outlier_fraction
     
     def training_step(self, batch_data, batch_idx):
         batch_images, batch_redshifts, batch_redshift_weights, batch_colors = batch_data
@@ -154,31 +174,23 @@ class SimCLRMoCoLightning(pl.LightningModule):
         self.log("cl_training_loss", cl_loss, on_epoch=True, sync_dist=True)
         self.log("training_pos_sim", pos_sim, on_epoch=True, sync_dist=True)
         
-        good_redshifts = batch_redshift_weights == 1
-        if good_redshifts is None:
-            redshift_loss = 0
-        else:
-            redshift_predictions = redshift_predictions[good_redshifts]
-            batch_redshifts = batch_redshifts[good_redshifts]
-            batch_redshift_weights = batch_redshift_weights[good_redshifts]
-            redshift_loss = self.redshift_loss(redshift_predictions, batch_redshifts)
-            redshift_loss = 10 * redshift_loss
-        self.log("redshift_training_loss", redshift_loss, on_epoch=True, sync_dist=True)
-        
-        delta = (redshift_predictions - batch_redshifts) / (1+batch_redshifts)
-        bias = torch.mean(delta)
-        nmad = 1.4826*torch.median(torch.abs(delta-torch.median(delta)))
-        outlier_fraction = torch.sum(torch.abs(delta)>0.15)/len(batch_redshifts)
-        
-        self.log('training_bias', bias, on_step=True, on_epoch=True, sync_dist=True)
-        self.log('training_nmad', nmad, on_step=True, on_epoch=True, sync_dist=True)
-        self.log('training_outlier_f', outlier_fraction, on_step=True, on_epoch=True, sync_dist=True)
-        
-        color_loss = self.weighted_mse_loss(color_predictions, batch_colors, 1)
-        color_loss = 10 * color_loss
-        self.log("color_training_loss", color_loss, on_epoch=True, sync_dist=True)
-        
-        total_loss = cl_loss + color_loss + redshift_loss
+        total_loss = cl_loss
+        if self.redshift_mlp is not None:
+            redshift_loss, bias, nmad, outlier_fraction\
+            = self.redshift_loss_and_metrics(redshift_predictions, batch_redshifts, batch_redshift_weights)
+            
+            self.log('training_bias', bias, on_step=True, on_epoch=True, sync_dist=True)
+            self.log('training_nmad', nmad, on_step=True, on_epoch=True, sync_dist=True)
+            self.log('training_outlier_f', outlier_fraction, on_step=True, on_epoch=True, sync_dist=True)
+
+            total_loss += redshift_loss
+            
+        if self.color_mlp is not None:
+            color_loss = self.weighted_mse_loss(color_predictions, batch_colors)
+            color_loss = 10 * color_loss
+            self.log("color_training_loss", color_loss, on_epoch=True, sync_dist=True)
+            total_loss += color_loss
+
         self.log("total_training_loss", total_loss, on_epoch=True, sync_dist=True)
 
         return total_loss
@@ -204,31 +216,29 @@ class SimCLRMoCoLightning(pl.LightningModule):
         self.log("cl_validation_loss", cl_loss, on_epoch=True, sync_dist=True)
         self.log("validation_pos_sim", pos_sim, on_epoch=True, sync_dist=True)
         
-        good_redshifts = batch_redshift_weights == 1
-        redshift_predictions = redshift_predictions[good_redshifts]
-        batch_redshifts = batch_redshifts[good_redshifts]
-        batch_redshift_weights = batch_redshift_weights[good_redshifts]
-        redshift_loss = self.redshift_loss(redshift_predictions, batch_redshifts)
-        redshift_loss = 10 * redshift_loss
-        self.log("redshift_validation_loss", redshift_loss, on_epoch=True, sync_dist=True)
+        total_loss = cl_loss
 
-        delta = (redshift_predictions - batch_redshifts) / (1+batch_redshifts)
-        bias = torch.mean(delta)
-        nmad = 1.4826*torch.median(torch.abs(delta-torch.median(delta)))
-        outlier_fraction = torch.sum(torch.abs(delta)>0.15)/len(batch_redshifts)
-        
-        self.log('val_bias', bias, on_step=True, on_epoch=True, sync_dist=True)
-        self.log('val_nmad', nmad, on_step=True, on_epoch=True, sync_dist=True)
-        self.log('val_outlier_f', outlier_fraction, on_step=True, on_epoch=True, sync_dist=True)
-        
-        color_loss = self.weighted_mse_loss(color_predictions, batch_colors, 1)
-        color_loss = 10 * color_loss
-        self.log("color_validation_loss", color_loss, on_epoch=True, sync_dist=True)
-        
-        total_loss = cl_loss + color_loss + redshift_loss
+        if self.redshift_mlp is not None:
+            redshift_loss, bias, nmad, outlier_fraction\
+            = self.redshift_loss_and_metrics(redshift_predictions, batch_redshifts, batch_redshift_weights)
+            
+            self.log('val_bias', bias, on_step=True, on_epoch=True, sync_dist=True)
+            self.log('val_nmad', nmad, on_step=True, on_epoch=True, sync_dist=True)
+            self.log('val_outlier_f', outlier_fraction, on_step=True, on_epoch=True, sync_dist=True)
+
+            total_loss += redshift_loss
+
+        if self.color_mlp is not None:
+            color_loss = self.weighted_mse_loss(color_predictions, batch_colors)
+            color_loss = 10 * color_loss
+            self.log("color_validation_loss", color_loss, on_epoch=True, sync_dist=True)
+
+            total_loss += color_loss
+
         self.log("total_validation_loss", total_loss, on_epoch=True, sync_dist=True)
         
         return total_loss
+    
     
     def configure_optimizers(self):
         optim = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=1e-05)
