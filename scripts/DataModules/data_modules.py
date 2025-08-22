@@ -3,26 +3,23 @@ import torch
 import h5py
 import numpy as np
 
-
 class ImagesDataset(torch.utils.data.Dataset):
     def __init__(
         self,
-        path_to_file: str = None,
+        path_file: str = None,
         with_redshift: bool = False,
         with_features: bool = False,
         with_weights: bool = False,
         reddening_transform = None,
         load_ebv: bool = False,
-        im_id: int = 2,
     ):
         super().__init__()
-        self.h5_file = h5py.File(path_to_file, 'r')
+        self.h5_file = h5py.File(path_file, 'r')
         self.with_redshift = with_redshift
         self.with_features = with_features
         self.with_weights = with_weights
         self.reddening_transform = reddening_transform
         self.load_ebv = load_ebv
-        self.im_id = im_id
         
     def __len__(self) -> int:
         return len(self.h5_file['images'])
@@ -38,49 +35,44 @@ class ImagesDataset(torch.utils.data.Dataset):
         if self.reddening_transform:
             image = self.reddening_transform([image, ebv])
 
-        if self.im_id == 3:
-            image = np.float64(image)
-            image = np.sign(image)*np.log10(1+np.abs(1000*image))
-            image = np.float16(image)
         if self.with_redshift:
             return image, redshift, redshift_weight, color_features
         else:
             return image
 
-
         
-class candels_images_data_module(pl.LightningDataModule):
+class ImagesDataModule(pl.LightningDataModule):
     def __init__(
         self,
         batch_size: int = 128,
         num_workers: int = 1,
         train_size: float = 0.8,
-        path_to_file: str = None,
-        path_to_val: str = None,
-        with_labels: bool = False,
+        path_train: str = None,
+        path_val: str = None,
+        with_redshift: bool = False,
+        with_features: bool = False,
         with_weights: bool = False,
         reddening_transform = None,
         load_ebv: bool = False,
-        im_id: int = 2,
     ):
         super().__init__()
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.train_size = train_size
-        self.path_to_file = path_to_file
-        self.path_to_val = path_to_val
-        self.with_labels = with_labels
+        self.path_train = path_train
+        self.path_val = path_val
+        self.with_redshift = with_redshift
+        self.with_features = with_features
         self.with_weights = with_weights
         self.reddening_transform = reddening_transform
         self.load_ebv = load_ebv
-        self.im_id = im_id
         
     def setup(self, stage):
-        if self.path_to_val:
-            self.images_train = self._create_dataset(self.path_to_file)
-            self.images_val = self._create_dataset(self.path_to_val)
+        if self.path_val:
+            self.images_train = self._create_dataset(self.path_train)
+            self.images_val = self._create_dataset(self.path_val)
         else:
-            full_dataset = self._create_dataset(self.path_to_file)
+            full_dataset = self._create_dataset(self.path_train)
             generator = torch.Generator().manual_seed(42)
             self.images_train, self.images_val = torch.utils.data.random_split(
                 full_dataset,
@@ -91,12 +83,12 @@ class candels_images_data_module(pl.LightningDataModule):
     def _create_dataset(self, path: str) -> ImagesDataset:
         """Helper to create a dataset with consistent parameters."""
         return ImagesDataset(
-            path_to_file=path,
-            with_labels=self.with_labels,
+            path_file=path,
+            with_redshift=self.with_redshift,
+            with_features=self.with_features,
             with_weights=self.with_weights,
             reddening_transform=self.reddening_transform,
             load_ebv=self.load_ebv,
-            im_id=self.im_id,
         )
      
     def train_dataloader(self) -> torch.utils.data.DataLoader:
