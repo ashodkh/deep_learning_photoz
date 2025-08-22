@@ -10,6 +10,4 @@ In this work, we test the feasibility of these methods on higher-redshift galaxi
 # Semi-Supervised Photo-z Algorithm
 Our approach combines contrastive learning ([MoCo](https://github.com/facebookresearch/moco) implementation), color prediction, and redshift prediction, to learn a low-dimensional representation (latent space) of galaxy images that is ideal for redshift prediction across a wide range of redshifts (from 0 to ~3).
 
-<img width="2491" alt="semi_supervised_architecture" src="https://github.com/user-attachments/assets/3462298c-7d99-4008-a238-61f1da921aeb" />
-
-
+<img width="1578" height="869" alt="semi_supervised_architecture" src="https://github.com/user-attachments/assets/df847c21-aad5-4e2d-8e2d-6bd1bcd13a02" />
